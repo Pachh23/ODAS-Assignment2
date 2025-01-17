@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <title>ระบบจองคิวพบแพทย์ออนไลน์</title>
+    <link rel="stylesheet" type="text/css" href="main.css">
+    <script src="https://cdn.jsdelivr.net/npm/web3@1.10.4/dist/web3.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.slim.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Mali:wght@300;400;500&display=swap');
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="status" id="status">กำลังโหลด...</div>
+
+        <div class="nav">
+            <button class="nav-btn active" onclick="showPage('doctors', event)">รายชื่อแพทย์</button>
+            <button class="nav-btn" onclick="showPage('reservations', event)">ประวัติการจอง</button>
+        </div>
+
+        <!-- Doctors Page -->
+        <div id="doctors-page" class="page active">
+            <div class="doctor-grid"></div>
+        </div>
+
+        <!-- Reservations Page -->
+        <div id="reservations-page" class="page">
+            <h2>ประวัติการจอง</h2>
+            <table class="reservations-table">
+                <thead>
+                    <tr>
+                        <th>เวลา</th>
+                        <th>แพทย์</th>
+                        <th>ผู้จอง (address)</th>
+                    </tr>
+                </thead>
+                <tbody id="reservationsBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const doctors = [
+            { id: 1, name: "พญ. ฮัน จียู", schedule: "จันทร์ | 19.00 น. - 19.55 น.", price: "0.0001 Ether", cases: 119, rating: 5.0, image: "./images/d1.png" },
+            { id: 2, name: "นพ. จาง อูจี", schedule: "อังคาร | 18.00 น. - 18.55 น.", price: "0.0001 Ether", cases: 96, rating: 4.9, image: "./images/d2.png" },
+            { id: 3, name: "พญ. ยู ฮเยจอง", schedule: "พุธ | 17.00 น. - 17.55 น.", price: "0.0001 Ether", cases: 98, rating: 4.8, image: "./images/d4.png" },
+            { id: 4, name: "พญ. จอน วอนอู", schedule: "พฤหัสบดี | 18.00 น. - 18.55 น.", price: "0.0001 Ether", cases: 110, rating: 5.0, image: "./images/d3.png" },
+            { id: 5, name: "พญ. ซาฮารา", schedule: "ศุกร์ | 19.00 น. - 19.55 น.", price: "0.0001 Ether", cases: 106, rating: 5.0, image: "./images/d5.png" },
+            { id: 6, name: "นพ. คิม ซูคยอน", schedule: "เสาร์, อาทิตย์ | 16.00 น. - 16.55 น.", price: "0.0001 Ether", cases: 89, rating: 4.7, image: "./images/d6.png" }
+        ];
+
+        const doctorGrid = document.querySelector('.doctor-grid');
+        doctors.forEach(doctor => {
+            doctorGrid.innerHTML += `
+                <div class="doctor-card">
+                    <div class="logo-container">
+                        <img src="${doctor.image}" alt="Doctor Avatar" class="doctor-avatar">
+                    </div>
+                    <div class="doctor-info">
+                        <div class="doctor-name">${doctor.name}</div>
+                        <div class="schedule">${doctor.schedule}</div>
+                        <div class="price">${doctor.price}</div>
+                        <div class="stats">
+                            <div class="stat-item">💚 <span>ยอดนิยม</span></div>
+                            <div class="stat-item">👥 <span>${doctor.cases} เคส</span></div>
+                            <div class="stat-item">⭐ <span>${doctor.rating}</span></div>
+                        </div>
+                    </div>
+                    <button class="reserve-btn" onclick="reserveAppointment(${doctor.id})">จองคิว</button>
+                </div>
+            `;
+        });
+
+        async function loadWeb3() {
+            if (window.ethereum) {
+                window.web3 = new Web3(window.ethereum);
+                try {
+                    await window.ethereum.request({ method: 'eth_requestAccounts' });
+                    return true;
+                } catch (error) {
+                    console.error("User denied account access");
+                    return false;
+                }
+            } else {
+                updateStatus('กรุณาติดตั้ง MetaMask เพื่อใช้งาน DApp');
+                return false;
+            }
+        }
+
+        let currentAccount = null;
+
+        function showPage(pageId, event) {
+            document.querySelectorAll('.page').forEach(page => {
+                page.classList.remove('active');
+            });
+            document.getElementById(pageId + '-page').classList.add('active');
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            if (event && event.target) {
+                event.target.classList.add('active');
+            }
+            localStorage.setItem('activePage', pageId);
+            if (pageId === 'reservations') {
+                loadReservations();
+            }
+        }
+
+        window.onload = () => {
+            const activePage = localStorage.getItem('activePage') || 'doctors';
+            showPage(activePage);
+        };
+
+        function handleAccountsChanged(accounts) {
+            if (accounts.length === 0) {
+                updateStatus('กรุณาเชื่อมต่อกับ MetaMask');
+            } else if (accounts[0] !== currentAccount) {
+                currentAccount = accounts[0];
+                updateStatus(`เชื่อมต่อแล้ว: ${currentAccount.substring(0, 6)}...${currentAccount.substring(38)}`);
+                loadReservations();
+            }
+        }
+
+        const CONTRACT_ADDRESS = '0x03D0C936534d0978428C861ca1CC55e59D2aAe5C';
+        const ABI = [
+          {
+            "inputs": [],
+            "stateMutability": "nonpayable",
+            "type": "constructor"
+          },
+          {
+            "anonymous": false,
+            "inputs": [
+              {
+                "indexed": true,
+                "internalType": "uint256",
+                "name": "reservationId",
+                "type": "uint256"
+              },
+              {
+                "indexed": true,
+                "internalType": "uint256",
+                "name": "doctorId",
+                "type": "uint256"
+              },
+              {
+                "indexed": true,
+                "internalType": "address",
+                "name": "patient",
+                "type": "address"
+              },
+              {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "timeSlot",
+                "type": "uint256"
+              },
+              {
+                "indexed": false,
+                "internalType": "string",
+                "name": "doctorName",
+                "type": "string"
+              }
+            ],
+            "name": "ReservationCreated",
+            "type": "event"
+          },
+          {
+            "inputs": [
+              {
+                "internalType": "uint256",
+                "name": "doctorId",
+                "type": "uint256"
+              }
+            ],
+            "name": "reserveAppointment",
+            "outputs": [],
+            "stateMutability": "payable",
+            "type": "function"
+          },
+          {
+            "inputs": [],
+            "name": "withdraw",
+            "outputs": [],
+            "stateMutability": "nonpayable",
+            "type": "function"
+          },
+          {
+            "inputs": [
+              {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+              },
+              {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+              }
+            ],
+            "name": "doctorSchedule",
+            "outputs": [
+              {
+                "internalType": "bool",
+                "name": "",
+                "type": "bool"
+              }
+            ],
+            "stateMutability": "view",
+            "type": "function"
+          },
+          {
+            "inputs": [],
+            "name": "getAllReservations",
+            "outputs": [
+              {
+                "internalType": "uint256[]",
+                "name": "times",
+                "type": "uint256[]"
+              },
+              {
+                "internalType": "string[]",
+                "name": "doctors",
+                "type": "string[]"
+              },
+              {
+                "internalType": "address[]",
+                "name": "patients",
+                "type": "address[]"
+              }
+            ],
+            "stateMutability": "view",
+            "type": "function"
+          },
+          {
+            "inputs": [],
+            "name": "nextReservationId",
+            "outputs": [
+              {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+              }
+            ],
+            "stateMutability": "view",
+            "type": "function"
+          },
+          {
+            "inputs": [],
+            "name": "owner",
+            "outputs": [
+              {
+                "internalType": "address",
+                "name": "",
+                "type": "address"
+              }
+            ],
+            "stateMutability": "view",
+            "type": "function"
+          },
+          {
+            "inputs": [
+              {
+                "internalType": "address",
+                "name": "",
+                "type": "address"
+              },
+              {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+              }
+            ],
+            "name": "patientReservations",
+            "outputs": [
+              {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+              }
+            ],
+            "stateMutability": "view",
+            "type": "function"
+          },
+          {
+            "inputs": [
+              {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+              }
+            ],
+            "name": "reservations",
+            "outputs": [
+              {
+                "internalType": "uint256",
+                "name": "doctorId",
+                "type": "uint256"
+              },
+              {
+                "internalType": "address",
+                "name": "patient",
+                "type": "address"
+              },
+              {
+                "internalType": "uint256",
+                "name": "timeSlot",
+                "type": "uint256"
+              },
+              {
+                "internalType": "uint256",
+                "name": "price",
+                "type": "uint256"
+              },
+              {
+                "internalType": "string",
+                "name": "doctorName",
+                "type": "string"
+              }
+            ],
+            "stateMutability": "view",
+            "type": "function"
+          }
+        ];
+  
+        async function reserveAppointment(doctorId) {
+            if (!currentAccount) {
+                updateStatus('กรุณาเชื่อมต่อกระเป๋าเงินก่อน');
+                return;
+            }
+
+            try {
+                const contract = new web3.eth.Contract(ABI, CONTRACT_ADDRESS);
+                const price = '0.0001';
+                const priceInWei = web3.utils.toWei(price, 'ether');
+                
+                const transaction = await contract.methods.reserveAppointment(doctorId)
+                    .send({
+                        from: currentAccount,
+                        value: priceInWei
+                    });
+
+                updateStatus('จองคิวสำเร็จ! Transaction: ' + transaction.transactionHash);
+                showPage('reservations', null);
+            } catch (error) {
+                updateStatus('เกิดข้อผิดพลาดในการจองคิว: ' + error.message);
+            }
+        }
+
+        const doctorNameMapping = {
+            "Dr. Han Ji-yu": "พญ. ฮัน จียู",
+            "Dr. Zhang Wu-ji": "นพ. จาง อูจี",
+            "Dr. Yu Hye-jung": "พญ. ยู ฮเยจอง",
+            "Dr. Jeon Won-woo": "พญ. จอน วอนอู",
+            "Dr. Sahara": "พญ. ซาฮารา",
+            "Dr. Kim Soo-kyun": "นพ. คิม ซูคยอน",
+            "Unknown Doctor": "ไม่ระบุแพทย์"
+        };
+
+        function loadReservations() {
+            const contract = new web3.eth.Contract(ABI, CONTRACT_ADDRESS);
+            
+            contract.methods.getAllReservations().call()
+                .then(result => {
+                    const { times, doctors, patients } = result;
+                    const reservationsBody = document.getElementById('reservationsBody');
+                    
+                    let html = '';
+                    for(let i = 0; i < times.length; i++) {
+                        const date = new Date(times[i] * 1000);
+                        const thaiDoctorName = doctorNameMapping[doctors[i]] || doctors[i];
+                        html += `
+                            <tr>
+                                <td>${date.toLocaleTimeString()}</td>
+                                <td>${thaiDoctorName}</td>
+                                <td>${patients[i]}</td>
+                            </tr>
+                        `;
+                    }
+                    
+                    reservationsBody.innerHTML = html;
+                })
+                .catch(error => {
+                    console.error('Error loading reservations:', error);
+                });
+        }
+        function updateStatus(message) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            console.log(message);
+        }
+
+        async function init() {
+            if (await loadWeb3()) {
+                window.ethereum.on('accountsChanged', handleAccountsChanged);
+                const accounts = await web3.eth.getAccounts();
+                handleAccountsChanged(accounts);
+                updateStatus('พร้อมใช้งาน!');
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>
